@@ -20,7 +20,9 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import com.mashape.unirest.http.JsonNode;
+import com.msqube.confluent.model.ProducerModel;
 import com.msqube.confluent.model.Repository;
+import com.msqube.confluent.model.User;
 
 @Component
 public class GithubProducer {
@@ -48,7 +50,7 @@ public class GithubProducer {
 	@Autowired
 	private GitHubAPIHttpClient gitClient;
 
-	private KafkaProducer<String, Repository> producer = null;
+	private KafkaProducer<String, ProducerModel> producer = null;
 
 	private void initializeVaraiables() {
 
@@ -71,7 +73,6 @@ public class GithubProducer {
 			log.info("Config Values: ", config.toString());
 			producer = new KafkaProducer<>(config);
 		} catch (UnknownHostException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
 	}
@@ -82,16 +83,29 @@ public class GithubProducer {
 		initializeVaraiables();
 
 		try {
-				
+				//Repository producer
 				String requestUrl = String.format("https://api.github.com/orgs/%s/repos", env.getProperty(OWNER_ORG));
 				JsonNode jsonResponse;
 				jsonResponse = gitClient.getNextItems(requestUrl,env.getProperty(OWNER_TOKEN));
 				for (Object obj : jsonResponse.getArray()) {
-					Repository repo = Repository.formJson((JSONObject) obj);
-					repo.setOwner(env.getProperty(OWNER_ORG));
+					Repository repo = (Repository) (new Repository()).formJson((JSONObject) obj);
+					repo.setOrganizationName(env.getProperty(OWNER_ORG));
 					// push repository into topic
-					log.info("Repos: " + repo.getRepository() + "," + repo.getOwner());
 					sendMessage(repo);
+				}
+				
+				//User producer
+				requestUrl = String.format("https://api.github.com/orgs/%s/members", env.getProperty(OWNER_ORG));
+				jsonResponse = gitClient.getNextItems(requestUrl,env.getProperty(OWNER_TOKEN));
+				for (Object obj : jsonResponse.getArray()) {
+					JSONObject userObj = (JSONObject) obj;
+					String userLogin=userObj.getString("login");
+					String userUrl = String.format("https://api.github.com/users/%s", userLogin);
+					JsonNode userResponse = gitClient.getNextItems(userUrl,env.getProperty(OWNER_TOKEN));
+					User user = (User) (new User()).formJson((JSONObject) userResponse.getObject());
+					user.setOrganizationName(env.getProperty(OWNER_ORG));
+					// push repository into topic
+					sendMessage(user);
 				}
 
 		} catch (InterruptedException e) {
@@ -100,25 +114,21 @@ public class GithubProducer {
 		} 
 
 	}
+	
 
 	// send Message to kafka
-	private void sendMessage(Repository repo) {
+	private void sendMessage(ProducerModel model) {
 		try {
-			if (repo != null) {
-				ProducerRecord<String, Repository> record = new ProducerRecord<>(env.getProperty(KAFKA_TOPIC),
-						TOPIC_KEY, repo);
-
+			if (model != null) {
+				ProducerRecord<String, ProducerModel> record = new ProducerRecord<>(env.getProperty(KAFKA_TOPIC),
+						TOPIC_KEY, model);
 				RecordMetadata metadata = producer.send(record).get();
-				log.info("sent record(key=%s value=%s) " +
-                        "meta(partition=%d, offset=%d) \n",
-                record.key(), record.value(), metadata.partition(),
-                metadata.offset());
+				log.info("Produced Message: ", metadata.offset());
 			}
+			
 		} catch (InterruptedException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 		} catch (ExecutionException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
 
